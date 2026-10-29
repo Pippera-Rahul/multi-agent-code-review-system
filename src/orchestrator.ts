@@ -161,9 +161,7 @@ Return a complete JSON report matching the supplied schema.`;
         stderr: (data: string) => {
           process.stderr.write(`[claude-sdk] ${data}`);
         },
-        permissionMode: 'bypassPermissions',
-        allowDangerouslySkipPermissions: true,
-        allowedTools: ['Task', 'mcp__github__pull_request_read', 'mcp__github__get_file_contents', 'mcp__github__list_pull_requests'],
+        allowedTools: ['Task', 'mcp__github__*', 'mcp__eslint__*'],
         mcpServers: mcpServersConfig,
         agents: {
           'code-quality-analyzer': codeQualityAnalyzer,
