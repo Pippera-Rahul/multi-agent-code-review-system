@@ -42,7 +42,7 @@ export class CodeReviewOrchestrator {
       model: options.model || process.env.ANTHROPIC_MODEL || '',
       maxTurns: options.maxTurns ?? 20,
       maxBudgetUsd: options.maxBudgetUsd ?? 1,
-      timeoutMs: options.timeoutMs ?? 120_000,
+      timeoutMs: options.timeoutMs ?? 300_000,
       maxRetries: options.maxRetries ?? 1
     };
 
@@ -161,9 +161,9 @@ Return a complete JSON report matching the supplied schema.`;
         stderr: (data: string) => {
           process.stderr.write(`[claude-sdk] ${data}`);
         },
-        permissionMode: 'dontAsk',
-        tools: { type: 'preset', preset: 'claude_code' },
-        allowedTools: ['Task', 'mcp__github__pull_request_read'],
+        permissionMode: 'bypassPermissions',
+        allowDangerouslySkipPermissions: true,
+        allowedTools: ['Task', 'mcp__github__pull_request_read', 'mcp__github__get_file_contents', 'mcp__github__list_pull_requests'],
         mcpServers: mcpServersConfig,
         agents: {
           'code-quality-analyzer': codeQualityAnalyzer,
@@ -182,10 +182,27 @@ Return a complete JSON report matching the supplied schema.`;
 
       let structuredOutput: unknown;
 
-      for await (const message of query({
+      const sdkQuery = query({
         prompt,
         options: sdkOptions
-      })) {
+      });
+
+      try {
+        const mcpStatuses = await sdkQuery.mcpServerStatus();
+        console.error(
+          '[claude-sdk] MCP status:',
+          JSON.stringify(
+            mcpStatuses.map((server) => server)
+          )
+        );
+      } catch (error) {
+        console.error(
+          '[claude-sdk] MCP status check failed:',
+          error instanceof Error ? error.message : String(error)
+        );
+      }
+
+      for await (const message of sdkQuery) {
         if (message.type === 'system' || message.type === 'assistant' ||
             message.type === 'user' || message.type === 'result') {
           const subtype = 'subtype' in message ? message.subtype : undefined;
@@ -193,6 +210,41 @@ Return a complete JSON report matching the supplied schema.`;
             `[claude-sdk] message=${message.type}` +
             (subtype ? ` subtype=${subtype}` : '')
           );
+        }
+
+        if (message.type === 'assistant' || message.type === 'user') {
+          const diagnostic = message as unknown as {
+            message?: { content?: Array<Record<string, unknown>> };
+          };
+          const blocks = diagnostic.message?.content;
+          if (Array.isArray(blocks)) {
+            for (const block of blocks) {
+              if (block.type === 'tool_use') {
+                console.error(
+                  `[claude-sdk] tool_use name=${String(block.name ?? 'unknown')}`
+                );
+              } else if (block.type === 'tool_result') {
+                const content = block.content;
+                const resultText = typeof content === 'string'
+                  ? content
+                  : Array.isArray(content)
+                    ? content.map((part) => {
+                        if (part && typeof part === 'object' && 'text' in part) {
+                          return String((part as { text?: unknown }).text ?? '');
+                        }
+                        return '';
+                      }).join(' ')
+                    : '';
+                const safePreview = resultText
+                  .replace(/(Bearer\s+)[^\s]+/gi, '$1[REDACTED]')
+                  .replace(/(gh[pousr]_[A-Za-z0-9_]+|voc-[A-Za-z0-9_-]+)/g, '[REDACTED]')
+                  .slice(0, 180);
+                console.error(
+                  `[claude-sdk] tool_result error=${String(block.is_error ?? false)} preview=${JSON.stringify(safePreview)}`
+                );
+              }
+            }
+          }
         }
 
         if (message.type === 'result') {
@@ -233,6 +285,13 @@ Return a complete JSON report matching the supplied schema.`;
       }
 
       const report = parsed.data;
+
+      if (report.fileReviews.length === 0) {
+        throw new ReviewError(
+          'The review returned zero analyzed files. Verify GitHub MCP access and changed-file retrieval; refusing to generate an empty successful report.',
+          ErrorCodes.VALIDATION_FAILED
+        );
+      }
 
       if (
         report.pullRequest.owner.toLowerCase() !== owner.toLowerCase() ||

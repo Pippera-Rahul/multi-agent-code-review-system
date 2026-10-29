@@ -6,7 +6,8 @@ export const mcpServersConfig = {
     type: 'http' as const,
     url: 'https://api.githubcopilot.com/mcp/',
     headers: {
-      Authorization: `Bearer ${process.env.GITHUB_TOKEN || ''}`
+      Authorization: `Bearer ${process.env.GITHUB_TOKEN || ''}`,
+      'User-Agent': 'Code-Review-Capstone'
     }
   },
   eslint: {
